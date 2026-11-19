@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>STM32 Line Follower Control Cockpit</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;800&family=Plus+Jakarta+Sans:wght@500;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="app-container">
+
+    <!-- Top Navigation Header -->
+    <header class="top-nav">
+      <div class="brand">
+        <div class="logo-dot"></div>
+        <div>
+          <h1>ROB301 LINE FOLLOWER</h1>
+          <span class="sub-title">STM32 NUCLEO-G474RE • ESP32-C3 BLE UART</span>
+        </div>
+      </div>
+
+      <div class="ble-bar">
+        <div class="bot-selector-chips">
+          <button class="chip chip-bot active-bot" id="chipVT78" onclick="selectAndConnectBot('VT78')">🤖 BOT 2 (VT78)</button>
+          <button class="chip chip-bot" id="chipXRSC" onclick="selectAndConnectBot('XRSC')">🤖 BOT 1 (XRSC)</button>
+        </div>
+
+        <div class="ble-input-group">
+          <label for="bleIdInput">CUSTOM</label>
+          <input type="text" id="bleIdInput" value="VT78" maxlength="4" placeholder="VT78" autocomplete="off">
+        </div>
+
+        <button id="btnConnectBle" class="btn-primary" onclick="toggleBleConnection()">
+          <span class="btn-icon">⚡</span>
+          <span id="txtConnectBtn">CONNECT</span>
+        </button>
+
+        <div class="status-pill" id="bleStatusPill">
+          <span class="status-dot" id="bleStatusDot"></span>
+          <span id="bleStatusText">DISCONNECTED</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Grid Dashboard -->
+    <main class="dashboard-grid">
+
+      <!-- Section 1: Core Motion Deck -->
+      <section class="card motion-deck">
+        <div class="card-header">
+          <h2>PRIMARY CONTROLS</h2>
+          <span class="badge" id="robotStateBadge">STOPPED</span>
+        </div>
+
+        <div class="action-buttons-row">
+          <button id="btnStart" class="btn-action btn-start" onclick="sendCommand('s')">
+            <div class="action-icon">▶</div>
+            <div class="action-meta">
+              <span class="action-title">START</span>
+              <span class="action-sub">Follow Line (Enter)</span>
+            </div>
+          </button>
+
+          <button id="btnStop" class="btn-action btn-stop" onclick="sendCommand('x')">
+            <div class="action-icon">⏹</div>
+            <div class="action-meta">
+              <span class="action-title">EMERGENCY STOP</span>
+              <span class="action-sub">Halt Motors (Space)</span>
+            </div>
+          </button>
+
+          <button id="btnReverse" class="btn-action btn-reverse" onclick="sendCommand('r')">
+            <div class="action-icon">⏪</div>
+            <div class="action-meta">
+              <span class="action-title">REVERSE</span>
+              <span class="action-sub">Back Up (R)</span>
+            </div>
+          </button>
+        </div>
+
+        <!-- Speed Tuning Section -->
+        <div class="speed-control-container">
+          <div class="speed-header">
+            <span class="label">CRUISING BASE SPEED</span>
+            <div class="speed-value"><span id="speedValue">70</span><span class="unit">% PWM</span></div>
+          </div>
+          
+          <div class="slider-row">
+            <button class="btn-nudge" onclick="nudgeSpeed(-5)">-5%</button>
+            <input type="range" id="speedSlider" min="30" max="85" step="5" value="70" onchange="onSliderSpeed(this.value)">
+            <button class="btn-nudge" onclick="nudgeSpeed(+5)">+5%</button>
+          </div>
+
+          <div class="presets-row">
+            <button class="preset-pill" onclick="sendPresetSpeed('1')">30%</button>
+            <button class="preset-pill" onclick="sendPresetSpeed('3')">40%</button>
+            <button class="preset-pill" onclick="sendPresetSpeed('5')">50%</button>
+            <button class="preset-pill" onclick="sendPresetSpeed('7')">60%</button>
+            <button class="preset-pill active" id="pill70" onclick="sendPresetSpeed('8')">70%</button>
+            <button class="preset-pill" onclick="sendPresetSpeed('9')">80%</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Section 2: Sensor Array & Line HUD -->
+      <section class="card sensor-hud">
+        <div class="card-header">
+          <h2>OPTICAL SENSOR ARRAY (8-IR)</h2>
+          <span class="badge" id="lineValidityBadge">VALID</span>
+        </div>
+
+        <div class="sensor-bar-wrapper">
+          <div class="sensor-array">
+            <div class="sensor-cell" id="sens0"><span>0</span><div class="led"></div></div>
+            <div class="sensor-cell" id="sens1"><span>1</span><div class="led"></div></div>
+            <div class="sensor-cell" id="sens2"><span>2</span><div class="led"></div></div>
+            <div class="sensor-cell center-pair" id="sens3"><span>3</span><div class="led"></div></div>
+            <div class="sensor-cell center-pair" id="sens4"><span>4</span><div class="led"></div></div>
+            <div class="sensor-cell" id="sens5"><span>5</span><div class="led"></div></div>
+            <div class="sensor-cell" id="sens6"><span>6</span><div class="led"></div></div>
+            <div class="sensor-cell" id="sens7"><span>7</span><div class="led"></div></div>
+          </div>
+          <div class="center-marker-label">▲ TARGET CENTER (3.5) ▲</div>
+        </div>
+
+        <!-- Line Position Gauge -->
+        <div class="position-track-container">
+          <div class="track-header">
+            <div>
+              <span class="label">LINE POSITION (P)</span>
+              <div class="metric-val" id="valPosition">3.50</div>
+            </div>
+            <div>
+              <span class="label">TRACKING ERROR (E)</span>
+              <div class="metric-val" id="valError">0.00</div>
+            </div>
+            <div>
+              <span class="label">CORRECTION (C)</span>
+              <div class="metric-val" id="valCorrection">0</div>
+            </div>
+          </div>
+
+          <div class="analog-track">
+            <div class="track-center-tick"></div>
+            <div class="track-needle" id="trackNeedle"></div>
+          </div>
+          <div class="track-scale">
+            <span>-3.5 (Far Left)</span>
+            <span>0.0 (Centered)</span>
+            <span>+3.5 (Far Right)</span>
+          </div>
+        </div>
+
+        <!-- Dual Wheel Motor Output Cockpit -->
+        <div class="dual-motors-container">
+          <div class="motor-pod">
+            <div class="motor-meta">
+              <span class="pod-title">LEFT WHEEL</span>
+              <span class="pod-pwm" id="valLeftPwm">70%</span>
+            </div>
+            <div class="gauge-bar-outer">
+              <div class="gauge-bar-fill left-fill" id="barLeftPwm" style="width: 70%"></div>
+            </div>
+          </div>
+
+          <div class="motor-pod">
+            <div class="motor-meta">
+              <span class="pod-title">RIGHT WHEEL</span>
+              <span class="pod-pwm" id="valRightPwm">70%</span>
+            </div>
+            <div class="gauge-bar-outer">
+              <div class="gauge-bar-fill right-fill" id="barRightPwm" style="width: 70%"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Section 3: Live PID Gain Tuning Deck -->
+      <section class="card pid-deck">
+        <div class="card-header">
+          <h2>LIVE PID TUNER (REAL-TIME OVER BLE)</h2>
+          <button class="btn-small" onclick="queryPidGains()">↺ READ GAINS</button>
+        </div>
+
+        <div class="pid-channels-grid">
+          <!-- Kp Channel -->
+          <div class="pid-channel-card">
+            <div class="channel-header">
+              <span class="param-name">PROPORTIONAL (Kp)</span>
+              <span class="param-desc">Steering authority</span>
+            </div>
+            <div class="param-val" id="valKp">2.2</div>
+            <div class="param-buttons">
+              <button class="btn-tuner" onclick="sendCommand('A')">-1.0</button>
+              <button class="btn-tuner" onclick="sendCommand('a')">-0.5</button>
+              <button class="btn-tuner" onclick="sendCommand('q')">+0.5</button>
+              <button class="btn-tuner" onclick="sendCommand('Q')">+1.0</button>
+            </div>
+          </div>
+
+          <!-- Kd Channel -->
+          <div class="pid-channel-card">
+            <div class="channel-header">
+              <span class="param-name">DERIVATIVE (Kd)</span>
+              <span class="param-desc">Anti-wobble shock absorber</span>
+            </div>
+            <div class="param-val" id="valKd">16.0</div>
+            <div class="param-buttons">
+              <button class="btn-tuner" onclick="sendCommand('Z')">-2.0</button>
+              <button class="btn-tuner" onclick="sendCommand('z')">-1.0</button>
+              <button class="btn-tuner" onclick="sendCommand('w')">+1.0</button>
+              <button class="btn-tuner" onclick="sendCommand('W')">+2.0</button>
+            </div>
+          </div>
+
+          <!-- Ki Channel -->
+          <div class="pid-channel-card">
+            <div class="channel-header">
+              <span class="param-name">INTEGRAL (Ki)</span>
+              <span class="param-desc">Steady-state offset</span>
+            </div>
+            <div class="param-val" id="valKi">0.00</div>
+            <div class="param-buttons">
+              <button class="btn-tuner" onclick="sendCommand('c')">-0.05</button>
+              <button class="btn-tuner" onclick="sendCommand('e')">+0.05</button>
+              <button class="btn-tuner" onclick="sendCommand('E')">+0.20</button>
+              <button class="btn-tuner btn-reset" onclick="sendCommand('C')">RESET</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Section 4: Live Telemetry Chart -->
+      <section class="card chart-deck">
+        <div class="card-header">
+          <h2>LIVE TRACKING OSCILLOGRAM</h2>
+          <div class="chart-legend">
+            <span class="legend-item"><span class="legend-color err-col"></span> Error (E)</span>
+            <span class="legend-item"><span class="legend-color left-col"></span> Left PWM</span>
+            <span class="legend-item"><span class="legend-color right-col"></span> Right PWM</span>
+          </div>
+        </div>
+        <div class="canvas-wrap">
+          <canvas id="telemetryChart"></canvas>
+        </div>
+      </section>
+
+      <!-- Section 5: Raw Serial Stream Terminal -->
+      <section class="card terminal-deck">
+        <div class="card-header">
+          <h2>SERIAL LOG (115200 BAUD)</h2>
+          <div class="term-tools">
+            <label class="toggle-wrap">
+              <input type="checkbox" id="chkAutoscroll" checked>
+              <span>Auto-scroll</span>
+            </label>
+            <button class="btn-small" onclick="clearConsole()">CLEAR</button>
+          </div>
+        </div>
+        <div class="terminal-body" id="termLogs"></div>
+      </section>
+
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
+

@@ -1,0 +1,42 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Virtual Environments & Python
+.venv/
+venv/
+ENV/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Temporary & Locks
+/tmp/
+*.lock
+/logs/*.log
+/logs/*.csv
+
+# Large archives & exports
+Archive.zip
+*.zip
+*.tar.gz
+
+# STM32 CubeIDE Build Artifacts (keep source, makefiles, linker scripts, and .bin/.hex)
+Lab_12/Debug/Core/
+Lab_12/Debug/Drivers/
+Lab_12/Debug/**/*.o
+Lab_12/Debug/**/*.d
+Lab_12/Debug/**/*.su
+Lab_12/Debug/*.list
+Lab_12/Debug/*.map
+Lab_12/Debug/*.elf
+
+# IDE Project User Settings
+.settings/language.settings.xml
