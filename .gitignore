@@ -38,6 +38,10 @@ Lab_12/Debug/*.list
 Lab_12/Debug/*.map
 Lab_12/Debug/*.elf
 
+# Local tool/agent folders
+.v2c/
+.video_agent/
+
 # IDE Project User Settings
 .settings/language.settings.xml
 

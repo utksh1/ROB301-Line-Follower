@@ -11,7 +11,7 @@ Designed for the **ROB301 Lab 12** curriculum and optimized for continuous high-
 ```text
        ┌────────────────────────┐
        │   8-IR Sensor Array    │
-       │    (PC0 - PC7 ADC)     │
+       │ (8 digital GPIO in)    │
        └───────────┬────────────┘
                    │
                    ▼
@@ -33,13 +33,16 @@ Designed for the **ROB301 Lab 12** curriculum and optimized for continuous high-
 ## ✨ Features
 
 ### 1. Embedded Firmware (`Lab_12/Core/Src/main.c`)
-- **Anti-Wobble Low-Pass Filtered PID**:
+- **Sensors**: 8 digital IR inputs, left→right: PA10, PB3, PB5, PB4, PA8, PA9, PC7, PB6. Line position is the mean index of active sensors; error $E = \text{pos} - 3.5$.
+- **Anti-Wobble Low-Pass Filtered PID** (10 ms loop):
   - Cruising base speed: `70%` PWM
-  - Proportional gain: `Kp = 2.2` (eliminates aggressive steering kicks)
-  - Derivative damping: `Kd = 16.0` with exponential low-pass filter ($0.35 \cdot \text{raw} + 0.65 \cdot \text{filtered}$) to prevent centerline overshoot
-  - Integral gain: `Ki = 0.0` (eliminates phase-lag hunting oscillation)
-  - Center deadband: $|E| \le 0.55$ locks both wheels straight on sensors 3 & 4
-  - Motor stall threshold protection: `MIN_PWM = 55%` prevents inner wheel stall on L298N $V_{CE(sat)}$ drop
+  - Proportional gain: `Kp = 2.2`
+  - Derivative damping: `Kd = 16.0` with exponential low-pass filter ($0.35 \cdot \text{raw} + 0.65 \cdot \text{filtered}$), updated every tick
+  - Integral gain: `Ki = 0.0` by default; live-tunable with anti-windup clamp (±20)
+  - Center deadband: only when perfectly centred ($E = 0$, sensors 3 & 4)
+  - **Curve slowdown**: base speed drops 4% per unit of $|E|$
+  - **Slew limit**: wheel PWM changes at most 4% per 10 ms tick, so there are no steering kicks
+  - Motor stall floor: `MIN_PWM = 55%` at the default 70% speed, scaled down proportionally for lower speed presets
 - **Grid Intersection Recognition**:
   - Safely handles ladder grid tracks with cross-lines every ~30 cm without mistaking intersections for sharp turns or line loss
   - Glides straight through cross-lines when center sensors confirm the forward path
@@ -78,7 +81,7 @@ Run the unified launcher with your robot's BLE sticker ID:
 ```
 
 The launcher will:
-1. Start the Web Cockpit server on `http://localhost:8080` (and `http://<YOUR_IP>:8080` for mobile phone / tablet access)
+1. Start the Web Cockpit server on `http://localhost:8080`. Add `--lan` (e.g. `./start.sh VT78 --lan`) to also serve `http://<YOUR_IP>:8080` for phone / tablet access. There's no login, so anyone on that Wi-Fi can drive the robot.
 2. Open your default web browser
 3. Run the BLE connection handshake in the foreground with live progress logs
 
@@ -93,6 +96,22 @@ The launcher will:
 | **R** | ⏪ REVERSE |
 | **`+` / `-`** | Nudge Cruising Speed $\pm 5\%$ |
 | **`1` .. `9`** | Speed Presets ($30\%$ to $80\%$) |
+
+---
+
+## 🐍 Tuning Out Wobble (Snaking)
+
+Measure first: run `python logger.py before` during a lap, Ctrl+C, and read **Side flips/s** and **StdDev** in the summary. Change one thing, re-run, and compare.
+
+| Symptom | Fix | How |
+|:---|:---|:---|
+| Slow, wide S-curves | Too much P | Web cockpit or keys `a` / `A` (Kp −0.5 / −1.0) |
+| Fast, tight zig-zag | Too little damping | `w` / `W` (Kd +1 / +2) |
+| Jerky / twitchy | D too high | `z` / `Z` (Kd −1 / −2) |
+| Snakes worse at speed | Speed too high for sensor spacing | Lower speed (`-` or presets `5`–`7`) |
+| Sits slightly off-centre on long straights | Steady bias | Small Ki: `e` (+0.05), reset with `C` |
+
+Compile-time knobs in `main.c`: `CURVE_SLOWDOWN` (raise it to brake harder in curves), `MAX_DUTY_STEP` (lower it for smoother steering, raise it if the robot is too slow to react), and `PID_DEADBAND`.
 
 ---
 

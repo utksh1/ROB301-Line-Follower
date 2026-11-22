@@ -23,6 +23,7 @@ DEFAULT_BOT="XRSC"
 TARGET_BOT="$DEFAULT_BOT"
 OPEN_BROWSER=true
 SERVER_ONLY=false
+SERVER_ARGS=()
 
 # Parse arguments & flags
 for arg in "$@"; do
@@ -30,14 +31,18 @@ for arg in "$@"; do
         --no-browser)
             OPEN_BROWSER=false
             ;;
+        --lan)
+            SERVER_ARGS+=("--lan")
+            ;;
         --server-only|--web-only)
             SERVER_ONLY=true
             ;;
         -h|--help)
-            echo -e "${BOLD}Usage:${NC} ./start.sh [BOT_ID] [--no-browser] [--server-only]"
+            echo -e "${BOLD}Usage:${NC} ./start.sh [BOT_ID] [--lan] [--no-browser] [--server-only]"
             echo ""
             echo "Options:"
             echo "  BOT_ID         Sticker ID of BLE adapter (default: XRSC, or VT78)"
+            echo "  --lan          Allow phones/tablets on the same Wi-Fi (no auth!)"
             echo "  --server-only  Run only the Web Cockpit server (connect BLE manually)"
             echo "  --no-browser   Do not automatically open the browser on start"
             echo "  -h, --help     Show this help message"
@@ -81,8 +86,11 @@ echo "=================================================================="
 echo -e "${NC}"
 echo -e "  ${BOLD}Target Bot:${NC}      ${GREEN}C3-${TARGET_BOT}${NC}"
 echo -e "  ${BOLD}Local Cockpit:${NC}   ${CYAN}http://localhost:8080${NC}"
-echo -e "  ${BOLD}Phone / WiFi:${NC}    ${CYAN}http://${LOCAL_IP}:8080${NC}"
-echo -e "  ${BOLD}Telemetry Port:${NC}  ws://${LOCAL_IP}:8765"
+if [ ${#SERVER_ARGS[@]} -gt 0 ]; then
+    echo -e "  ${BOLD}Phone / WiFi:${NC}    ${CYAN}http://${LOCAL_IP}:8080${NC}  ${YELLOW}(LAN mode: no auth)${NC}"
+else
+    echo -e "  ${BOLD}Phone / WiFi:${NC}    disabled (add --lan to enable)"
+fi
 echo ""
 echo -e "  ${YELLOW}Keyboard Shortcuts in Web Cockpit:${NC}"
 echo -e "    • ${BOLD}Spacebar${NC}  -> Emergency STOP"
@@ -103,21 +111,20 @@ if [ -e /tmp/c3-ble ] && pgrep -f "ble-serial" >/dev/null 2>&1; then
     echo -e "${GREEN}[✓] Active BLE bridge already detected on /tmp/c3-ble!${NC}"
     echo -e "${CYAN}[*] Web Cockpit will attach directly to your existing connection.${NC}"
     echo -e "${CYAN}[*] Press Ctrl+C to stop the Web Cockpit.${NC}\n"
-    exec "$PYTHON_BIN" "$SCRIPT_DIR/web_panel/server.py" "$TARGET_BOT"
+    exec "$PYTHON_BIN" "$SCRIPT_DIR/web_panel/server.py" "$TARGET_BOT" ${SERVER_ARGS[@]+"${SERVER_ARGS[@]}"}
 fi
 
 if [ "$SERVER_ONLY" = true ]; then
     echo -e "${GREEN}[*] Starting Web Cockpit Server in Standalone Mode...${NC}"
     echo -e "${YELLOW}[i] Run your BLE connection manually in another terminal:${NC}"
     echo -e "    ${BOLD}\"$PYTHON_BIN\" \"$SCRIPT_DIR/DAY 1/connect.py\" $TARGET_BOT${NC}\n"
-    exec "$PYTHON_BIN" "$SCRIPT_DIR/web_panel/server.py" "$TARGET_BOT"
+    exec "$PYTHON_BIN" "$SCRIPT_DIR/web_panel/server.py" "$TARGET_BOT" ${SERVER_ARGS[@]+"${SERVER_ARGS[@]}"}
 fi
 
 # Cleanup handler on exit for full mode
 cleanup() {
     echo -e "\n${YELLOW}[!] Shutting down Line Follower Cockpit & BLE bridge...${NC}"
     kill "$SERVER_PID" 2>/dev/null || true
-    pkill -9 -f "server\.py" 2>/dev/null || true
     pkill -9 -f "connect\.py" 2>/dev/null || true
     pkill -9 -f "ble-serial" 2>/dev/null || true
     rm -f /tmp/c3-ble /tmp/cu.c3-ble /tmp/c3-ble.lock 2>/dev/null || true
@@ -131,7 +138,7 @@ rm -f /tmp/c3-ble /tmp/cu.c3-ble /tmp/c3-ble.lock 2>/dev/null || true
 
 # Start Web Cockpit server in background
 echo -e "${GREEN}[*] Launching Web Cockpit Server on http://localhost:8080...${NC}"
-"$PYTHON_BIN" "$SCRIPT_DIR/web_panel/server.py" "$TARGET_BOT" &
+"$PYTHON_BIN" "$SCRIPT_DIR/web_panel/server.py" "$TARGET_BOT" ${SERVER_ARGS[@]+"${SERVER_ARGS[@]}"} &
 SERVER_PID=$!
 sleep 0.8
 

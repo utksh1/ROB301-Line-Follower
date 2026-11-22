@@ -47,6 +47,15 @@ typedef enum { STOPPED, FOLLOW, REVERSE } RobotState;
 
 #define MAX_CORRECTION      25
 #define INTEGRAL_LIMIT      20.0f  // anti-windup clamp on the I-accumulator
+
+// ── Anti-wobble tuning ───────────────────────────────────────────────────────
+// Deadband only covers "perfectly centred" (sensors 3+4 both on → E=0).
+// The old 0.55 deadband also swallowed E=±0.5 (one centre sensor), letting the
+// robot drift a full sensor before reacting — that drift-then-kick is the snake.
+#define PID_DEADBAND        0.30f
+#define DERIV_ALPHA         0.35f  // derivative low-pass: new = a*raw + (1-a)*old
+#define CURVE_SLOWDOWN      4.0f   // % base speed removed per unit of |E|
+#define MAX_DUTY_STEP       4      // max PWM change per 10 ms tick (slew limit)
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -74,8 +83,7 @@ volatile uint8_t speedChanged  = 0;
 volatile float Kp = KP_DEFAULT;
 volatile float Ki = KI_DEFAULT;
 volatile float Kd = KD_DEFAULT;
-volatile uint8_t pidChanged = 0;
-char pidChangedMsg[32];
+volatile uint8_t pidChanged = 0;  // set in ISR; message is formatted in main loop
 
 RobotState robotState = STOPPED;
 
@@ -96,9 +104,11 @@ float linePosition    = 0.0f;
 float lineError       = 0.0f;
 float prevError       = 0.0f;
 volatile int8_t turnDir = 0; // +1 = RIGHT branch, -1 = LEFT branch
-float integralError   = 0.0f;   // I-accumulator
-uint8_t leftMotorDuty  = 0;
-uint8_t rightMotorDuty = 0;
+volatile float integralError = 0.0f;   // I-accumulator (reset from ISR on Ki change)
+float filteredDeriv   = 0.0f;   // low-passed derivative state
+int slewLeft  = 0;              // slew-limited duty actually applied in FOLLOW
+int slewRight = 0;
+uint32_t reverseHoldUntil = 0;  // non-blocking coast window before reversing
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -149,60 +159,43 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
       speedChanged = 1;
 
     // ── Live PID gain tuning ────────────────────────────────────────────────
+    // No printf in the ISR: just set pidChanged; telemetry_task() reports
+    // all three gains, so the web cockpit's PID panel updates on every change.
     // P gain: q=Kp+0.5  Q=Kp+1.0  a=Kp-0.5  A=Kp-1.0
     } else if (uartRxByte == 'q') {
-      Kp += 0.5f; snprintf(pidChangedMsg, sizeof(pidChangedMsg), "Kp=%.1f", Kp); pidChanged = 1;
+      Kp += 0.5f; pidChanged = 1;
     } else if (uartRxByte == 'Q') {
-      Kp += 1.0f; snprintf(pidChangedMsg, sizeof(pidChangedMsg), "Kp=%.1f", Kp); pidChanged = 1;
+      Kp += 1.0f; pidChanged = 1;
     } else if (uartRxByte == 'a') {
       if (Kp > 0.5f) { Kp -= 0.5f; }
-      snprintf(pidChangedMsg, sizeof(pidChangedMsg), "Kp=%.1f", Kp);
       pidChanged = 1;
     } else if (uartRxByte == 'A') {
       if (Kp > 1.0f) { Kp -= 1.0f; }
-      snprintf(pidChangedMsg, sizeof(pidChangedMsg), "Kp=%.1f", Kp);
       pidChanged = 1;
     // I gain: e=Ki+0.05  E=Ki+0.2  c=Ki-0.05  C=Ki reset
     } else if (uartRxByte == 'e') {
-      Ki += 0.05f;
-      integralError = 0.0f;
-      snprintf(pidChangedMsg, sizeof(pidChangedMsg), "Ki=%.2f", Ki);
-      pidChanged = 1;
+      Ki += 0.05f; integralError = 0.0f; pidChanged = 1;
     } else if (uartRxByte == 'E') {
-      Ki += 0.2f;
-      integralError = 0.0f;
-      snprintf(pidChangedMsg, sizeof(pidChangedMsg), "Ki=%.2f", Ki);
-      pidChanged = 1;
+      Ki += 0.2f; integralError = 0.0f; pidChanged = 1;
     } else if (uartRxByte == 'c') {
       if (Ki > 0.05f) { Ki -= 0.05f; } else { Ki = 0.0f; }
-      integralError = 0.0f;
-      snprintf(pidChangedMsg, sizeof(pidChangedMsg), "Ki=%.2f", Ki);
-      pidChanged = 1;
+      integralError = 0.0f; pidChanged = 1;
     } else if (uartRxByte == 'C') {
-      Ki = 0.0f;
-      integralError = 0.0f;
-      snprintf(pidChangedMsg, sizeof(pidChangedMsg), "Ki=0.00(RST)");
-      pidChanged = 1;
+      Ki = 0.0f; integralError = 0.0f; pidChanged = 1;
     // D gain: w=Kd+1.0  W=Kd+2.0  z=Kd-1.0  Z=Kd-2.0
     } else if (uartRxByte == 'w') {
-      Kd += 1.0f;
-      snprintf(pidChangedMsg, sizeof(pidChangedMsg), "Kd=%.1f", Kd);
-      pidChanged = 1;
+      Kd += 1.0f; pidChanged = 1;
     } else if (uartRxByte == 'W') {
-      Kd += 2.0f;
-      snprintf(pidChangedMsg, sizeof(pidChangedMsg), "Kd=%.1f", Kd);
-      pidChanged = 1;
+      Kd += 2.0f; pidChanged = 1;
     } else if (uartRxByte == 'z') {
       if (Kd > 1.0f) { Kd -= 1.0f; }
-      snprintf(pidChangedMsg, sizeof(pidChangedMsg), "Kd=%.1f", Kd);
       pidChanged = 1;
     } else if (uartRxByte == 'Z') {
       if (Kd > 2.0f) { Kd -= 2.0f; } else { Kd = 0.0f; }
-      snprintf(pidChangedMsg, sizeof(pidChangedMsg), "Kd=%.1f", Kd);
       pidChanged = 1;
     // Print all current gains: 'g'
     } else if (uartRxByte == 'g' || uartRxByte == 'G') {
-      snprintf(pidChangedMsg, sizeof(pidChangedMsg), "Kp=%.1f Ki=%.2f Kd=%.1f", Kp, Ki, Kd); pidChanged = 1;
+      pidChanged = 1;
     }
 
     HAL_UART_Receive_IT(&huart1, (uint8_t *)&uartRxByte, 1);
@@ -233,9 +226,11 @@ void line_follow_task(uint32_t now) {
       reverseCommand = 0;
       startCommand = 0;
       if (robotState != REVERSE) {
-        Set_Motor_PWM(0, 0);            // coast briefly before reversing
-        HAL_Delay(50);
+        // Coast 50 ms before reversing — non-blocking (was HAL_Delay(50),
+        // which froze the control loop and telemetry).
+        Set_Motor_PWM(0, 0);
         Set_Motor_Direction_Reverse();
+        reverseHoldUntil = now + 50U;
         robotState = REVERSE;
       } else {
         // Press R again while already reversing → stop + restore forward
@@ -273,6 +268,9 @@ void line_follow_task(uint32_t now) {
       turnDir       = 0;
       prevError     = lineError;
       integralError = 0.0f;   // reset integral on fresh start — prevents windup spike
+      filteredDeriv = 0.0f;   // don't carry a stale derivative from the last run
+      slewLeft      = baseSpeed;
+      slewRight     = baseSpeed;
       Set_Motor_Directions(1, 1);
       robotState = FOLLOW;
     }
@@ -281,7 +279,11 @@ void line_follow_task(uint32_t now) {
     if (robotState == FOLLOW) {
       PID_Controller();
     } else if (robotState == REVERSE) {
-      Set_Motor_PWM((uint8_t)baseSpeed, (uint8_t)baseSpeed);
+      if ((int32_t)(now - reverseHoldUntil) < 0) {
+        Set_Motor_PWM(0, 0);
+      } else {
+        Set_Motor_PWM((uint8_t)baseSpeed, (uint8_t)baseSpeed);
+      }
     } else {
       Set_Motor_PWM(0, 0);
       leftDuty = 0;
@@ -296,7 +298,7 @@ void telemetry_task(uint32_t now) {
     // Priority 1: PID gain change notification
     if (pidChanged) {
       pidChanged = 0;
-      debug_uart_printf(">> PID %s\r\n", pidChangedMsg);
+      debug_uart_printf(">> PID Kp=%.1f Ki=%.2f Kd=%.1f\r\n", Kp, Ki, Kd);
       return;
     }
 
@@ -630,10 +632,20 @@ static void MX_GPIO_Init(void) {
 
 /* USER CODE BEGIN 4 */
 
+static int Slew(int current, int target) {
+  if (target > current + MAX_DUTY_STEP) return current + MAX_DUTY_STEP;
+  if (target < current - MAX_DUTY_STEP) return current - MAX_DUTY_STEP;
+  return target;
+}
+
 void PID_Controller(void) {
   if (!lineValid) {
     // ── Active Line Loss / Sharp Bend Recovery ───────────────────────────
     integralError = 0.0f;
+    filteredDeriv = 0.0f;
+    // Re-acquire from cruise speed, not from the pivot duties
+    slewLeft  = baseSpeed;
+    slewRight = baseSpeed;
 
     // First 20ms (2 ticks): drive straight forward to clear any brief sensor drop
     if (invalidCount <= 2) {
@@ -665,56 +677,60 @@ void PID_Controller(void) {
   Set_Motor_Directions(1, 1);
 
   float absError = (lineError >= 0.0f) ? lineError : -lineError;
-  int currentSpeed = baseSpeed;
 
-  // ── Anti-Snaking / Deadband & Filtered PID ─────────────────────────────
-  float corr = 0.0f;
+  // ── Derivative: updated EVERY tick so the filter never holds a stale value
+  // (previously it froze inside the deadband and fired on the next exit).
+  float rawDeriv = lineError - prevError;
+  prevError = lineError;
+  filteredDeriv = DERIV_ALPHA * rawDeriv + (1.0f - DERIV_ALPHA) * filteredDeriv;
 
-  if (absError <= 0.55f) {
-    // Deadband: Centered on line (sensors 3 & 4) -> zero steering jitter!
-    corr = 0.0f;
-    integralError = 0.0f;
-    prevError = lineError;
+  // ── Integral with anti-windup clamp (Ki = 0 by default → no effect) ─────
+  if (Ki > 0.0f) {
+    integralError += lineError;
+    if (integralError > INTEGRAL_LIMIT)  integralError = INTEGRAL_LIMIT;
+    if (integralError < -INTEGRAL_LIMIT) integralError = -INTEGRAL_LIMIT;
   } else {
-    // ── Low-pass filtered derivative to eliminate discrete sensor chatter ──
-    static float filteredDeriv = 0.0f;
-    float rawDeriv = lineError - prevError;
-    filteredDeriv = 0.35f * rawDeriv + 0.65f * filteredDeriv;
-    prevError = lineError;
+    integralError = 0.0f;
+  }
+  float i_term = Ki * integralError;
 
-    float p_term = Kp * lineError;
-    float d_term = Kd * filteredDeriv;
-
-    corr = p_term + d_term;
-
-    // Limit correction
-    if (corr > MAX_CORRECTION)
-      corr = MAX_CORRECTION;
-    if (corr < -MAX_CORRECTION)
-      corr = -MAX_CORRECTION;
+  float corr;
+  if (absError < PID_DEADBAND) {
+    corr = i_term;  // centred: no P/D kick, only slow trim
+  } else {
+    corr = Kp * lineError + Kd * filteredDeriv + i_term;
   }
 
-  correction = (int)corr;
+  if (corr > MAX_CORRECTION)  corr = MAX_CORRECTION;
+  if (corr < -MAX_CORRECTION) corr = -MAX_CORRECTION;
 
-  // Calculate motor duties using base speed
-  int lDuty = currentSpeed + correction;
-  int rDuty = currentSpeed - correction;
+  // Round instead of truncate (truncation threw away up to 1% each tick)
+  correction = (int)((corr >= 0.0f) ? (corr + 0.5f) : (corr - 0.5f));
 
-  // Clamp motor duties
-  if (lDuty > MAX_PWM)
-    lDuty = MAX_PWM;
+  // ── Stall floor scales with base speed ─────────────────────────────────
+  // At the default 70% this is exactly MIN_PWM (55). At low presets it drops
+  // so 30–50% speeds actually run slower instead of being clamped up to 55%.
+  int pwmFloor = (baseSpeed * MIN_PWM) / DEFAULT_BASE_SPEED;
+  if (pwmFloor > MIN_PWM) pwmFloor = MIN_PWM;
 
-  if (rDuty > MAX_PWM)
-    rDuty = MAX_PWM;
+  // ── Slow down in curves: less speed → less overshoot → less snaking ────
+  int cruise = baseSpeed - (int)(CURVE_SLOWDOWN * absError);
+  if (cruise < pwmFloor) cruise = pwmFloor;
 
-  if (lDuty < MIN_PWM)
-    lDuty = MIN_PWM;
+  int lTarget = cruise + correction;
+  int rTarget = cruise - correction;
 
-  if (rDuty < MIN_PWM)
-    rDuty = MIN_PWM;
+  if (lTarget > MAX_PWM)  lTarget = MAX_PWM;
+  if (rTarget > MAX_PWM)  rTarget = MAX_PWM;
+  if (lTarget < pwmFloor) lTarget = pwmFloor;
+  if (rTarget < pwmFloor) rTarget = pwmFloor;
 
-  leftDuty = lDuty;
-  rightDuty = rDuty;
+  // ── Slew-rate limit: no instant PWM jumps → no steering "kicks" ────────
+  slewLeft  = Slew(slewLeft,  lTarget);
+  slewRight = Slew(slewRight, rTarget);
+
+  leftDuty  = slewLeft;
+  rightDuty = slewRight;
 
   Set_Motor_PWM((uint8_t)leftDuty, (uint8_t)rightDuty);
 }

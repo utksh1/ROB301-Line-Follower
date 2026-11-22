@@ -36,6 +36,10 @@ PROJECT_DIR = BASE_DIR.parent
 PORT_BLE = Path("/tmp/c3-ble")
 HTTP_PORT = 8080
 WS_PORT = 8765
+BIND_HOST = "127.0.0.1"  # switched to 0.0.0.0 by --lan
+
+# Only single characters the firmware's UART ISR actually understands.
+ALLOWED_CMDS = set("SsXxRrBb+=-_uUdD123456789qQaAeEcCwWzZgG")
 
 connected_clients = set()
 loop = None
@@ -73,7 +77,6 @@ class StaticHandler(http.server.SimpleHTTPRequestHandler):
 
     def end_headers(self):
         self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
-        self.send_header("Access-Control-Allow-Origin", "*")
         super().end_headers()
 
     def log_message(self, format, *args):
@@ -127,7 +130,6 @@ def serial_reader_thread():
     while True:
         if not PORT_BLE.exists():
             time.sleep(0.5)
-            time.sleep(0.3)
             continue
 
         try:
@@ -335,9 +337,11 @@ async def ws_handler(websocket):
 
                 if msg_type == "cmd":
                     cmd = data.get("cmd", "")
-                    if cmd:
-                        write_serial(cmd.encode("utf-8"))
+                    if isinstance(cmd, str) and len(cmd) == 1 and cmd in ALLOWED_CMDS:
+                        write_serial(cmd.encode("ascii"))
                         print(f"[Cmd] Sent char: {cmd}")
+                    else:
+                        print(f"[Cmd] Rejected: {cmd!r}")
 
                 elif msg_type == "connect_ble":
                     target_id = data.get("id", "XRSC").strip().upper()
@@ -349,7 +353,8 @@ async def ws_handler(websocket):
 
                 elif msg_type == "preset_speed":
                     val = str(data.get("preset", "7"))
-                    write_serial(val.encode("utf-8"))
+                    if len(val) == 1 and val in "123456789":
+                        write_serial(val.encode("ascii"))
 
                 elif msg_type == "query_pid":
                     write_serial(b'g')
@@ -362,12 +367,27 @@ async def ws_handler(websocket):
 
 
 def run_http_server():
-    server = http.server.ThreadingHTTPServer(("0.0.0.0", HTTP_PORT), StaticHandler)
-    local_ip = get_local_ip()
+    server = http.server.ThreadingHTTPServer((BIND_HOST, HTTP_PORT), StaticHandler)
     print(f"[HTTP] Web Panel listening on:")
     print(f"       -> Local:   http://localhost:{HTTP_PORT}")
-    print(f"       -> Network: http://{local_ip}:{HTTP_PORT}")
+    if BIND_HOST == "0.0.0.0":
+        print(f"       -> Network: http://{get_local_ip()}:{HTTP_PORT}  (LAN mode: anyone on this Wi-Fi can drive the robot)")
+    else:
+        print(f"       -> Network: disabled (use --lan for phone/tablet access)")
     server.serve_forever()
+
+
+def allowed_origins():
+    """Only the cockpit page itself may open the WebSocket.
+
+    Stops any other website open in your browser from connecting to
+    ws://localhost:8765 and sending motor commands. None = non-browser
+    clients (scripts), which send no Origin header.
+    """
+    hosts = ["localhost", "127.0.0.1"]
+    if BIND_HOST == "0.0.0.0":
+        hosts.append(get_local_ip())
+    return [f"http://{h}:{HTTP_PORT}" for h in hosts] + [None]
 
 
 async def main():
@@ -381,8 +401,8 @@ async def main():
     threading.Thread(target=run_http_server, daemon=True).start()
 
     # Start WebSocket server
-    ws_server = await serve(ws_handler, "0.0.0.0", WS_PORT)
-    print(f"[WebSocket] Telemetry stream on ws://0.0.0.0:{WS_PORT}")
+    ws_server = await serve(ws_handler, BIND_HOST, WS_PORT, origins=allowed_origins())
+    print(f"[WebSocket] Telemetry stream on ws://{BIND_HOST}:{WS_PORT}")
 
     await asyncio.Future()  # run forever
 
@@ -392,9 +412,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Line Follower Cockpit Server")
     parser.add_argument("id", nargs="?", default="XRSC", help="Initial BLE ID (default: XRSC)")
     parser.add_argument("--auto-connect", action="store_true", help="Auto-connect BLE on launch")
+    parser.add_argument("--lan", action="store_true",
+                        help="Listen on all interfaces so phones/tablets on the same Wi-Fi can connect "
+                             "(no authentication: anyone on the network can drive the robot)")
     args = parser.parse_args()
 
     current_ble_id = args.id.upper()
+    if args.lan:
+        BIND_HOST = "0.0.0.0"
 
     if args.auto_connect:
         def auto_start():

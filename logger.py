@@ -90,15 +90,17 @@ with open(csv_path, "w", newline="") as csvfile:
 
         # ── Parse INVALID line ────────────────────────────────────────────────
         elif line.startswith("INVALID"):
+            # INVALID,STATE=FOLLOW  — robot may still be pivoting to recover
+            parts = dict(p.split("=", 1) for p in line.split(",") if "=" in p)
             row["valid"] = "INVALID"
-            row["state"] = "STOPPED"
+            row["state"] = parts.get("STATE", "?")
             row["P"] = row["E"] = row["C"] = row["L"] = row["R"] = None
-            print(f"{now_ms:>10} | {'INVALID':>7} | {'STOPPED':>8} |   --- |    --- |   --- |  --- |  ---")
+            print(f"{now_ms:>10} | {'INVALID':>7} | {row['state']:>8} |   --- |    --- |   --- |  --- |  ---")
 
-        # ── Parse speed change ────────────────────────────────────────────────
-        elif line.startswith(">> SPEED"):
+        # ── Parse speed / PID change ──────────────────────────────────────────
+        elif line.startswith(">> SPEED") or line.startswith(">> PID"):
             row["valid"] = "CMD"
-            row["state"] = "SPEED_CHANGE"
+            row["state"] = "SPEED_CHANGE" if "SPEED" in line else "PID_CHANGE"
             row["speed_cmd"] = line
             row["P"] = row["E"] = row["C"] = row["L"] = row["R"] = None
             print(f"{now_ms:>10} | {'CMD':>7} | {line}")
@@ -124,7 +126,7 @@ total_time_s = rows[-1]["timestamp_ms"] / 1000 if rows else 0
 # Find drop-off events (transitions to INVALID)
 dropoffs = []
 for i in range(1, len(rows)):
-    if rows[i]["valid"] == "INVALID" and rows[i-1]["valid"] == "VALID":
+    if rows[i]["valid"] == "INVALID" and rows[i-1]["valid"] == "VALID" and rows[i-1]["E"] is not None:
         last_valid = rows[i-1]
         dropoffs.append({
             "time_ms": last_valid["timestamp_ms"],
@@ -153,7 +155,13 @@ summary_lines.append("")
 if errors:
     summary_lines.append(f"  Error (E) stats:")
     summary_lines.append(f"    Mean  : {statistics.mean(errors):.3f}")
-    summary_lines.append(f"    StdDev: {statistics.stdev(errors):.3f}  (lower = smoother)")
+    if len(errors) > 1:
+        summary_lines.append(f"    StdDev: {statistics.stdev(errors):.3f}  (lower = smoother)")
+        # Wobble metric: how often the error flips side of the line.
+        # Zeros (centred) are skipped so -0.5 → 0 → +0.5 still counts as a flip.
+        signs = [e > 0 for e in errors if e != 0]
+        flips = sum(1 for a, b in zip(signs, signs[1:]) if a != b)
+        summary_lines.append(f"    Side flips: {flips} ({flips / (len(errors) / 10):.1f}/s)  (lower = less snaking)")
     summary_lines.append(f"    Min   : {min(errors):.2f}")
     summary_lines.append(f"    Max   : {max(errors):.2f}")
     summary_lines.append(f"    |E|>2 count (sharp turns): {sum(1 for e in errors if abs(e) > 2)}")
@@ -177,7 +185,7 @@ for i, d in enumerate(dropoffs, 1):
 if dropoffs:
     drop_errors = [d["E"] for d in dropoffs]
     summary_lines.append("")
-    summary_lines.append(f"  Most common E at line-loss: {statistics.mode(drop_errors) if len(set(drop_errors)) < len(drop_errors) else min(drop_errors, key=lambda x: abs(x+3.5)):.2f}")
+    summary_lines.append(f"  Most common E at line-loss: {statistics.mode(drop_errors):.2f}")
     left_drops  = sum(1 for d in dropoffs if d["E"] < 0)
     right_drops = sum(1 for d in dropoffs if d["E"] > 0)
     summary_lines.append(f"  Line lost on LEFT  (E<0): {left_drops} times")
