@@ -81,6 +81,12 @@
           </button>
         </div>
 
+        <!-- Hardware Polarity Toggles -->
+        <div class="polarity-row" style="display:flex;gap:8px;margin-top:12px;">
+          <button class="btn-small" style="flex:1;background:#1e293b;border:1px solid #334155;color:#e2e8f0;padding:8px;border-radius:6px;cursor:pointer;font-weight:600;font-size:12px;" onclick="sendCommand('m')" title="Swap Left and Right motor channels (PA7/PB10)">⇄ SWAP MOTORS (M)</button>
+          <button class="btn-small" style="flex:1;background:#1e293b;border:1px solid #334155;color:#e2e8f0;padding:8px;border-radius:6px;cursor:pointer;font-weight:600;font-size:12px;" onclick="sendCommand('k')" title="Flip S1..S8 sensor array indexing">⇄ FLIP SENSORS (K)</button>
+        </div>
+
         <!-- Speed Tuning Section -->
         <div class="speed-control-container">
           <div class="speed-header">

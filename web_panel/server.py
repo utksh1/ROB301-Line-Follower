@@ -39,7 +39,7 @@ WS_PORT = 8765
 BIND_HOST = "127.0.0.1"  # switched to 0.0.0.0 by --lan
 
 # Only single characters the firmware's UART ISR actually understands.
-ALLOWED_CMDS = set("SsXxRrBb+=-_uUdD123456789qQaAeEcCwWzZgG")
+ALLOWED_CMDS = set("SsXxRrBb+=-_uUdD123456789qQaAeEcCwWzZgGmMkK")
 
 connected_clients = set()
 loop = None

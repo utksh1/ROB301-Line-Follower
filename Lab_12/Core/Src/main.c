@@ -109,6 +109,8 @@ float filteredDeriv   = 0.0f;   // low-passed derivative state
 int slewLeft  = 0;              // slew-limited duty actually applied in FOLLOW
 int slewRight = 0;
 uint32_t reverseHoldUntil = 0;  // non-blocking coast window before reversing
+volatile uint8_t swapMotors   = 0;  // 1 = swap Left and Right channels (runtime toggle 'm')
+volatile uint8_t flipSensors  = 0;  // 1 = flip S1..S8 indexing (runtime toggle 'k')
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -196,6 +198,14 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     // Print all current gains: 'g'
     } else if (uartRxByte == 'g' || uartRxByte == 'G') {
       pidChanged = 1;
+    // Toggle Motor Swap: 'm' / 'M'
+    } else if (uartRxByte == 'm' || uartRxByte == 'M') {
+      swapMotors ^= 1;
+      debug_uart_printf(">> MOTOR SWAP=%s\r\n", swapMotors ? "ON" : "OFF");
+    // Toggle Sensor Bar Flip: 'k' / 'K'
+    } else if (uartRxByte == 'k' || uartRxByte == 'K') {
+      flipSensors ^= 1;
+      debug_uart_printf(">> SENSOR FLIP=%s\r\n", flipSensors ? "ON" : "OFF");
     }
 
     HAL_UART_Receive_IT(&huart1, (uint8_t *)&uartRxByte, 1);
@@ -277,7 +287,7 @@ void line_follow_task(uint32_t now) {
       startCommand = 0;
       invalidCount = 0;
       turnDir       = 0;
-      prevError     = lineError;
+      prevError     = 0.0f;   // Reset to 0 so no directional bias on launch
       integralError = 0.0f;   // reset integral on fresh start — prevents windup spike
       filteredDeriv = 0.0f;   // don't carry a stale derivative from the last run
       slewLeft      = baseSpeed;
@@ -658,8 +668,9 @@ void PID_Controller(void) {
     slewLeft  = baseSpeed;
     slewRight = baseSpeed;
 
-    // First 20ms (2 ticks): drive straight forward to clear any brief sensor drop
-    if (invalidCount <= 2) {
+    // First 150ms (15 ticks): drive straight forward to clear any brief sensor drop,
+    // surface dip, or tape gap. Also keep driving straight if we were not actively turning!
+    if (invalidCount <= 15 || turnDir == 0) {
       Set_Motor_Directions(1, 1);
       Set_Motor_PWM((uint8_t)baseSpeed, (uint8_t)baseSpeed);
       leftDuty = baseSpeed;
@@ -667,14 +678,15 @@ void PID_Controller(void) {
       return;
     }
 
-    // After 20ms of confirmed line loss: execute active corner search pivot
-    if (turnDir == +1 || prevError > 0.0f) {
+    // After 150ms of confirmed line loss ONLY if we were actively turning:
+    // execute active corner search pivot in the direction of the turn
+    if (turnDir == +1) {
       // ── 90° RIGHT TURN PIVOT ──────────────────────────────────────────
       Set_Motor_Directions(+1, -1);
       Set_Motor_PWM(80, 45);
       leftDuty = 80;
       rightDuty = -45;
-    } else {
+    } else if (turnDir == -1) {
       // ── 90° LEFT TURN PIVOT ───────────────────────────────────────────
       Set_Motor_Directions(-1, +1);
       Set_Motor_PWM(45, 80);
@@ -747,6 +759,12 @@ void PID_Controller(void) {
 }
 
 void Set_Motor_PWM(uint8_t left, uint8_t right) {
+  if (swapMotors) {
+    uint8_t tmp = left;
+    left = right;
+    right = tmp;
+  }
+
   if (left > 100)
     left = 100;
   if (right > 100)
@@ -768,6 +786,12 @@ void Set_Motor_PWM(uint8_t left, uint8_t right) {
 }
 
 void Set_Motor_Directions(int8_t leftDir, int8_t rightDir) {
+  if (swapMotors) {
+    int8_t tmp = leftDir;
+    leftDir = rightDir;
+    rightDir = tmp;
+  }
+
   // Left motor: IN1 (PA6), IN2 (PA5)
   if (leftDir > 0) {
     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_SET);
@@ -852,23 +876,36 @@ void Calculate_Line_Position(void) {
   lineError = linePosition - 3.5f;
 
   // Latch turn direction on significant lateral deviation
-  if (lineError > 1.0f) {
+  if (lineError > 1.2f) {
     turnDir = +1;
-  } else if (lineError < -1.0f) {
+  } else if (lineError < -1.2f) {
     turnDir = -1;
+  } else if (lineError > -0.6f && lineError < 0.6f) {
+    turnDir = 0;  // Centered on the line again — clear turn latch!
   }
 }
 
 void Read_Sensors(void) {
-  sensor[0] = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_10);
-  sensor[1] = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_3);
-  sensor[2] = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_5);
-  sensor[3] = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_4);
+  uint8_t raw[8];
+  raw[0] = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_10);
+  raw[1] = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_3);
+  raw[2] = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_5);
+  raw[3] = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_4);
 
-  sensor[4] = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_8);
-  sensor[5] = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_9);
-  sensor[6] = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_7);
-  sensor[7] = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_6);
+  raw[4] = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_8);
+  raw[5] = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_9);
+  raw[6] = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_7);
+  raw[7] = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_6);
+
+  if (flipSensors) {
+    for (int i = 0; i < 8; i++) {
+      sensor[i] = raw[7 - i];
+    }
+  } else {
+    for (int i = 0; i < 8; i++) {
+      sensor[i] = raw[i];
+    }
+  }
 }
 /* USER CODE END 4 */
 

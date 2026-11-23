@@ -467,6 +467,12 @@ function initKeyboardShortcuts() {
       nudgeSpeed(+5);
     } else if (e.key === "-" || e.key === "_") {
       nudgeSpeed(-5);
+    } else if (e.key === "m" || e.key === "M") {
+      sendCommand("m");
+      addLogLine("[KEY] M -> TOGGLE MOTOR SWAP", "highlight");
+    } else if (e.key === "k" || e.key === "K") {
+      sendCommand("k");
+      addLogLine("[KEY] K -> TOGGLE SENSOR FLIP", "highlight");
     } else if (e.key >= "1" && e.key <= "9") {
       sendPresetSpeed(e.key);
     }
