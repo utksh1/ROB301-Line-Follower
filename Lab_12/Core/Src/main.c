@@ -202,6 +202,17 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
   }
 }
 
+// Re-arm reception after a UART error (overrun / framing / noise on the BLE
+// link). Without this, HAL aborts the IT receive and the robot silently
+// ignores every command until the next power cycle.
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
+  if (huart->Instance == USART1) {
+    __HAL_UART_CLEAR_FLAG(huart, UART_CLEAR_OREF | UART_CLEAR_FEF |
+                                 UART_CLEAR_NEF | UART_CLEAR_PEF);
+    HAL_UART_Receive_IT(&huart1, (uint8_t *)&uartRxByte, 1);
+  }
+}
+
 void line_follow_task(uint32_t now) {
   if ((now - lastControlTick) >= CONTROL_INTERVAL_MS) {
     lastControlTick = now;
